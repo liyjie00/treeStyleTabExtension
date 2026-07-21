@@ -8,8 +8,17 @@ const BOUNDS_TOLERANCE = 2;
 let panelWindowId: number | null = null;
 let trackedWindowId: number | null = null;
 let shrunkWindowId: number | null = null;
+// How much width we actually took from shrunkWindowId — NOT necessarily
+// panelWidth, since we only take what's needed to avoid overflowing the
+// screen (see planShrink). Restoring must add back exactly this, or a
+// window that already had room (so wasn't shrunk at all) would grow the
+// next time the panel reattaches to it across a browser restart.
+let shrunkAmount = 0;
 let panelWidth = 260;
 let side: PanelSide = "right";
+// Persisted so the panel can reopen itself automatically next time the
+// browser starts, if it was left open when the browser last closed.
+let panelWasOpen = false;
 // Whether we've already compensated for the tracked window's *current*
 // maximized/fullscreen episode. Persisted so a service-worker restart (MV3
 // workers are frequently evicted) can't forget and double-shrink the window.
@@ -34,67 +43,131 @@ async function initPanelState(): Promise<void> {
   panelWindowId = await verifyWindow(persisted.panelWindowId);
   trackedWindowId = panelWindowId === null ? null : await verifyWindow(persisted.trackedWindowId);
   shrunkWindowId = panelWindowId === null ? null : await verifyWindow(persisted.shrunkWindowId);
+  shrunkAmount = shrunkWindowId === null ? 0 : persisted.shrunkAmount;
   maximizeShrunk = shrunkWindowId === null ? false : persisted.maximizeShrunk;
   panelWidth = prefs.panelWidth;
   side = prefs.side;
+  panelWasOpen = prefs.panelWasOpen;
 }
 
 async function persistState(): Promise<void> {
-  await savePanelState({ panelWindowId, trackedWindowId, shrunkWindowId, maximizeShrunk });
+  await savePanelState({ panelWindowId, trackedWindowId, shrunkWindowId, shrunkAmount, maximizeShrunk });
 }
 
 async function persistPrefs(): Promise<void> {
-  await savePanelPrefs({ side, panelWidth });
+  await savePanelPrefs({ side, panelWidth, panelWasOpen });
 }
 
 function isMaximizedLike(win: chrome.windows.Window): boolean {
   return win.state === "maximized" || win.state === "fullscreen";
 }
 
-// The edge of the main window that the panel sits flush against.
-function mainTouchEdge(win: chrome.windows.Window): number {
-  return side === "right" ? (win.left ?? 0) + (win.width ?? 0) : win.left ?? 0;
+async function getDisplayForWindow(win: chrome.windows.Window): Promise<chrome.system.display.DisplayInfo> {
+  const displays = await chrome.system.display.getInfo();
+  const cx = (win.left ?? 0) + (win.width ?? 0) / 2;
+  const cy = (win.top ?? 0) + (win.height ?? 0) / 2;
+  const match = displays.find(
+    (d) =>
+      cx >= d.bounds.left &&
+      cx < d.bounds.left + d.bounds.width &&
+      cy >= d.bounds.top &&
+      cy < d.bounds.top + d.bounds.height
+  );
+  return match ?? displays[0];
+}
+
+interface ShrinkPlan {
+  needsShrink: boolean;
+  newLeft: number;
+  newWidth: number;
+  shrinkAmount: number;
+}
+
+// Decides whether the window needs to give up any width at all: if it
+// already leaves enough room on-screen for the panel next to it, we leave it
+// untouched. This is what makes attaching idempotent — a window that was
+// already shrunk to exactly fit (from a previous session, restored by the
+// OS at its last-saved size) won't get shrunk *again* just because we don't
+// remember doing it last time (chrome.storage.session is cleared on a full
+// browser quit, but the OS still remembers the window's on-disk size).
+function planShrink(win: chrome.windows.Window, area: { left: number; width: number }): ShrinkPlan {
+  const screenLeft = area.left;
+  const screenRight = area.left + area.width;
+  const currentLeft = win.left ?? screenLeft;
+  const currentWidth = win.width ?? Math.max(area.width - panelWidth, MIN_MAIN_WIDTH);
+
+  let newLeft = currentLeft;
+  let newWidth = currentWidth;
+
+  if (side === "right") {
+    const overflow = currentLeft + currentWidth + panelWidth - screenRight;
+    if (overflow > 0) newWidth = Math.max(currentWidth - overflow, MIN_MAIN_WIDTH);
+  } else {
+    const overflow = screenLeft - (currentLeft - panelWidth);
+    if (overflow > 0) {
+      newLeft = currentLeft + overflow;
+      newWidth = Math.max(currentWidth - overflow, MIN_MAIN_WIDTH);
+    }
+  }
+
+  return {
+    needsShrink: newWidth !== currentWidth || newLeft !== currentLeft,
+    newLeft,
+    newWidth,
+    shrinkAmount: currentWidth - newWidth,
+  };
 }
 
 // Shrinks the tracked window's width (and shifts it out of the way, for a
 // left-docked panel) so the panel occupies freed-up screen space instead of
-// covering the page underneath.
+// covering the page underneath — but only as much as actually needed to fit
+// the screen (see planShrink), so reattaching an already-shrunk window
+// across a browser restart doesn't shrink it further each time.
 async function attachPanelToWindow(windowId: number): Promise<chrome.windows.Window> {
   const win = await chrome.windows.get(windowId);
-  const currentLeft = win.left ?? 0;
-  const currentWidth = win.width ?? panelWidth + MIN_MAIN_WIDTH;
-  const newWidth = Math.max(currentWidth - panelWidth, MIN_MAIN_WIDTH);
-  const actualShrink = currentWidth - newWidth;
+  const display = await getDisplayForWindow(win);
+  const plan = planShrink(win, display.workArea);
 
-  shrunkWindowId = windowId;
+  shrunkWindowId = plan.needsShrink ? windowId : null;
+  shrunkAmount = plan.needsShrink ? plan.shrinkAmount : 0;
   maximizeShrunk = isMaximizedLike(win);
   await persistState();
 
+  if (!plan.needsShrink) return win;
+
   const update: chrome.windows.UpdateInfo =
-    side === "right" ? { width: newWidth } : { left: currentLeft + actualShrink, width: newWidth };
+    side === "right" ? { width: plan.newWidth } : { left: plan.newLeft, width: plan.newWidth };
   await chrome.windows.update(windowId, update).catch(() => {});
   return chrome.windows.get(windowId);
 }
 
-// Gives the tracked window back the width the panel was borrowing. Rather
+// Gives the tracked window back exactly the width it was shrunk by. Rather
 // than snapping back to some remembered historical position, this just grows
 // whatever the window's current bounds are — so it works whether the window
 // is still where it started, was moved, or got maximized in the meantime.
 async function restoreShrunkWindow(): Promise<void> {
   if (shrunkWindowId === null) return;
   const windowId = shrunkWindowId;
+  const amount = shrunkAmount;
   shrunkWindowId = null;
+  shrunkAmount = 0;
   maximizeShrunk = false;
   await persistState();
+  if (amount <= 0) return;
   try {
     const win = await chrome.windows.get(windowId);
-    const newWidth = (win.width ?? 0) + panelWidth;
+    const newWidth = (win.width ?? 0) + amount;
     const update: chrome.windows.UpdateInfo =
-      side === "right" ? { width: newWidth } : { left: (win.left ?? 0) - panelWidth, width: newWidth };
+      side === "right" ? { width: newWidth } : { left: (win.left ?? 0) - amount, width: newWidth };
     await chrome.windows.update(windowId, update);
   } catch {
     // Window no longer exists — nothing to restore.
   }
+}
+
+// The edge of the main window that the panel sits flush against.
+function mainTouchEdge(win: chrome.windows.Window): number {
+  return side === "right" ? (win.left ?? 0) + (win.width ?? 0) : win.left ?? 0;
 }
 
 function panelBoundsFromMainWindow(win: chrome.windows.Window): {
@@ -149,14 +222,15 @@ async function reconcileMainWindowWidth(win: chrome.windows.Window): Promise<voi
   }
 
   if (maximizeShrunk) return;
-  const currentLeft = win.left ?? 0;
-  const currentWidth = win.width ?? 0;
-  const newWidth = Math.max(currentWidth - panelWidth, MIN_MAIN_WIDTH);
-  const actualShrink = currentWidth - newWidth;
+  const display = await getDisplayForWindow(win);
+  const plan = planShrink(win, display.workArea);
   maximizeShrunk = true;
+  shrunkWindowId = plan.needsShrink ? win.id : shrunkWindowId;
+  shrunkAmount = plan.needsShrink ? plan.shrinkAmount : shrunkAmount;
   await persistState();
+  if (!plan.needsShrink) return;
   const update: chrome.windows.UpdateInfo =
-    side === "right" ? { width: newWidth } : { left: currentLeft + actualShrink, width: newWidth };
+    side === "right" ? { width: plan.newWidth } : { left: plan.newLeft, width: plan.newWidth };
   await chrome.windows.update(win.id, update).catch(() => {});
 }
 
@@ -308,6 +382,30 @@ export async function ensurePanelOpen(initialWindowId: number): Promise<void> {
   });
   panelWindowId = created.id ?? null;
   await persistState();
+
+  panelWasOpen = true;
+  await persistPrefs();
+}
+
+// Reopens the panel automatically if it was still open last time and isn't
+// currently open. Covers both a genuine full quit-and-relaunch (onStartup)
+// and the more common case of closing the only window and opening a new one
+// without quitting the browser process at all (onCreated) — Chrome keeps
+// running in the background on most platforms unless the user quits it.
+async function autoOpenPanelIfNeeded(candidateWindowId?: number): Promise<void> {
+  await readyPanel;
+  if (!panelWasOpen || panelWindowId !== null) return;
+
+  if (candidateWindowId !== undefined) {
+    await ensurePanelOpen(candidateWindowId);
+    return;
+  }
+
+  const windows = await chrome.windows.getAll({ windowTypes: ["normal"] });
+  const target = windows.find((w) => w.focused) ?? windows[0];
+  if (target?.id === undefined) return;
+
+  await ensurePanelOpen(target.id);
 }
 
 export function registerPanelWindowListeners(): void {
@@ -345,10 +443,13 @@ export function registerPanelWindowListeners(): void {
         await restoreShrunkWindow();
         trackedWindowId = null;
         await persistState();
+        panelWasOpen = false;
+        await persistPrefs();
         return;
       }
       if (windowId === trackedWindowId) {
         shrunkWindowId = null;
+        shrunkAmount = 0;
         maximizeShrunk = false;
         await persistState();
         const remaining = await chrome.windows.getAll({ windowTypes: ["normal"] });
@@ -356,6 +457,10 @@ export function registerPanelWindowListeners(): void {
         if (next?.id !== undefined) {
           await setTrackedWindow(next.id);
         } else if (panelWindowId !== null) {
+          // Nothing left to dock to — close the panel window, but leave
+          // panelWasOpen alone: this is losing its anchor, not the user
+          // asking for the panel to be gone, so it should still come back
+          // via onCreated/onStartup once a window exists again.
           await chrome.windows.remove(panelWindowId).catch(() => {});
           panelWindowId = null;
           trackedWindowId = null;
@@ -363,5 +468,14 @@ export function registerPanelWindowListeners(): void {
         }
       }
     });
+  });
+
+  chrome.windows.onCreated.addListener((win) => {
+    if (win.type !== "normal" || win.id === undefined) return;
+    void autoOpenPanelIfNeeded(win.id);
+  });
+
+  chrome.runtime.onStartup.addListener(() => {
+    void autoOpenPanelIfNeeded();
   });
 }

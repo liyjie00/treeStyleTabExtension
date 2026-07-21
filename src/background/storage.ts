@@ -19,6 +19,7 @@ export interface PanelState {
   panelWindowId: number | null;
   trackedWindowId: number | null;
   shrunkWindowId: number | null;
+  shrunkAmount: number;
   maximizeShrunk: boolean;
 }
 
@@ -29,6 +30,7 @@ export async function loadPanelState(): Promise<PanelState> {
       panelWindowId: null,
       trackedWindowId: null,
       shrunkWindowId: null,
+      shrunkAmount: 0,
       maximizeShrunk: false,
     }
   );
@@ -43,9 +45,10 @@ export async function savePanelState(state: PanelState): Promise<void> {
 export interface PanelPrefs {
   side: PanelSide;
   panelWidth: number;
+  panelWasOpen: boolean;
 }
 
-const DEFAULT_PREFS: PanelPrefs = { side: "right", panelWidth: 260 };
+const DEFAULT_PREFS: PanelPrefs = { side: "right", panelWidth: 260, panelWasOpen: false };
 
 export async function loadPanelPrefs(): Promise<PanelPrefs> {
   const result = await chrome.storage.local.get(PANEL_PREFS_KEY);

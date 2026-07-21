@@ -14,6 +14,19 @@ export function addTab(
   opts: { forceRoot?: boolean } = {}
 ): void {
   if (tab.id === undefined) return;
+
+  // Chrome can deliver onCreated for a tab that's already tracked — e.g. on
+  // browser startup, session-restored tabs fire onCreated while we're also
+  // populating the tree from chrome.windows.getAll's already-open tabs.
+  // Re-adding it must not push a second copy into the roots/children array.
+  const existing = tree.nodes[tab.id];
+  if (existing) {
+    existing.title = tab.title ?? existing.title;
+    existing.favIconUrl = tab.favIconUrl ?? existing.favIconUrl;
+    existing.url = tab.url ?? existing.url;
+    return;
+  }
+
   const requestedParent = opts.forceRoot ? undefined : tab.openerTabId;
   const parentId =
     requestedParent !== undefined && tree.nodes[requestedParent] ? requestedParent : null;
@@ -32,6 +45,15 @@ export function addTab(
 
   tree.nodes[tab.id] = node;
   siblingList(tree, parentId).push(tab.id);
+}
+
+// Removes any accidental duplicate ids from roots/children arrays — a safety
+// net for state that was persisted before the addTab dedup fix above existed.
+export function dedupeTree(tree: WindowTree): void {
+  tree.roots = Array.from(new Set(tree.roots));
+  for (const node of Object.values(tree.nodes)) {
+    node.children = Array.from(new Set(node.children));
+  }
 }
 
 export function removeTab(tree: WindowTree, tabId: number): void {

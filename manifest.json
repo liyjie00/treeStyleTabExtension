@@ -3,7 +3,7 @@
   "name": "Tree Style Tabs",
   "version": "0.1.0",
   "description": "Nest tabs opened from a link under their opener tab, tree-style, like Firefox's Tree Style Tab.",
-  "permissions": ["tabs", "storage"],
+  "permissions": ["tabs", "storage", "system.display"],
   "background": {
     "service_worker": "background/index.js",
     "type": "module"

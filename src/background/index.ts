@@ -1,4 +1,12 @@
-import { addTab, createWindowTree, removeTab, setActiveTab, toggleCollapsed, updateTab } from "./tree";
+import {
+  addTab,
+  createWindowTree,
+  dedupeTree,
+  removeTab,
+  setActiveTab,
+  toggleCollapsed,
+  updateTab,
+} from "./tree";
 import { loadState, saveState } from "./storage";
 import { getCurrentSide, registerPanelWindowListeners, setPanelSide } from "./panelWindow";
 import type { WindowTree } from "../shared/types";
@@ -9,6 +17,9 @@ let ready = initState();
 
 async function initState(): Promise<void> {
   state = await loadState();
+  for (const tree of Object.values(state)) {
+    dedupeTree(tree);
+  }
 
   const windows = await chrome.windows.getAll({ populate: true });
   for (const window of windows) {
