@@ -261,12 +261,31 @@ export async function setPanelSide(newSide: PanelSide): Promise<void> {
   notifySideChanged();
 }
 
+function buildPanelUrl(windowId: number): string {
+  return chrome.runtime.getURL(`panel/index.html?windowId=${windowId}`);
+}
+
+// Reloading the extension in chrome://extensions tears down and re-serves
+// its resources, so any window still showing our old chrome-extension://
+// page loses its content (Chrome falls it back to the New Tab page) even
+// though the OS-level window itself keeps existing. Detect that and
+// re-navigate it back to the panel instead of just focusing a blank window.
+async function ensurePanelWindowContent(windowId: number, url: string): Promise<void> {
+  const win = await chrome.windows.get(windowId, { populate: true });
+  const tab = win.tabs?.[0];
+  if (!tab || tab.id === undefined) return;
+  if (!tab.url?.startsWith(chrome.runtime.getURL("panel/"))) {
+    await chrome.tabs.update(tab.id, { url });
+  }
+}
+
 export async function ensurePanelOpen(initialWindowId: number): Promise<void> {
   await readyPanel;
 
   if (panelWindowId !== null) {
     try {
       await chrome.windows.update(panelWindowId, { focused: true });
+      await ensurePanelWindowContent(panelWindowId, buildPanelUrl(initialWindowId));
       await setTrackedWindow(initialWindowId);
       return;
     } catch {
@@ -277,7 +296,7 @@ export async function ensurePanelOpen(initialWindowId: number): Promise<void> {
   trackedWindowId = initialWindowId;
   const mainWindow = await attachPanelToWindow(initialWindowId);
   const bounds = panelBoundsFromMainWindow(mainWindow);
-  const url = chrome.runtime.getURL(`panel/index.html?windowId=${initialWindowId}`);
+  const url = buildPanelUrl(initialWindowId);
 
   const created = await chrome.windows.create({
     url,

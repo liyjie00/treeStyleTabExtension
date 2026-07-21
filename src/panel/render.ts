@@ -1,4 +1,4 @@
-import type { WindowTree } from "../shared/types";
+import type { TabNode, WindowTree } from "../shared/types";
 
 export interface TreeHandlers {
   onActivate(tabId: number): void;
@@ -9,13 +9,54 @@ export interface TreeHandlers {
 const FALLBACK_FAVICON =
   "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%23999'/%3E%3C/svg%3E";
 
-export function renderTree(container: HTMLElement, tree: WindowTree, handlers: TreeHandlers): void {
+function nodeMatches(node: TabNode, query: string): boolean {
+  return node.title.toLowerCase().includes(query) || node.url.toLowerCase().includes(query);
+}
+
+// Search matches highlight rows and dim everything else, but ancestors of a
+// match still need to be force-expanded (even if collapsed) so the match
+// stays reachable — this walks up from every match collecting those ids.
+function computeSearchState(
+  tree: WindowTree,
+  query: string
+): { matches: Set<number>; forceExpand: Set<number> } {
+  const matches = new Set<number>();
+  const forceExpand = new Set<number>();
+  if (!query) return { matches, forceExpand };
+
+  for (const node of Object.values(tree.nodes)) {
+    if (!nodeMatches(node, query)) continue;
+    matches.add(node.id);
+    let parentId = node.parentId;
+    while (parentId !== null && !forceExpand.has(parentId)) {
+      forceExpand.add(parentId);
+      parentId = tree.nodes[parentId]?.parentId ?? null;
+    }
+  }
+  return { matches, forceExpand };
+}
+
+export function renderTree(
+  container: HTMLElement,
+  tree: WindowTree,
+  handlers: TreeHandlers,
+  searchQuery = ""
+): void {
   container.innerHTML = "";
-  const list = buildList(tree, tree.roots, handlers);
+  const query = searchQuery.trim().toLowerCase();
+  const { matches, forceExpand } = computeSearchState(tree, query);
+  const list = buildList(tree, tree.roots, handlers, query, matches, forceExpand);
   container.appendChild(list);
 }
 
-function buildList(tree: WindowTree, ids: number[], handlers: TreeHandlers): HTMLUListElement {
+function buildList(
+  tree: WindowTree,
+  ids: number[],
+  handlers: TreeHandlers,
+  query: string,
+  matches: Set<number>,
+  forceExpand: Set<number>
+): HTMLUListElement {
   const list = document.createElement("ul");
   list.className = "tab-list";
 
@@ -23,16 +64,23 @@ function buildList(tree: WindowTree, ids: number[], handlers: TreeHandlers): HTM
     const node = tree.nodes[id];
     if (!node) continue;
 
+    const isMatch = matches.has(id);
+    const searching = query.length > 0;
+    const isOpen = !node.collapsed || forceExpand.has(id);
+
     const item = document.createElement("li");
     item.className = "tab-item";
 
     const row = document.createElement("div");
-    row.className = "tab-row" + (node.active ? " active" : "");
+    row.className = "tab-row";
+    if (node.active) row.classList.add("active");
+    if (isMatch) row.classList.add("search-match");
+    if (searching && !isMatch && !forceExpand.has(id)) row.classList.add("search-dim");
 
     const toggle = document.createElement("span");
     toggle.className = "tab-toggle";
     if (node.children.length > 0) {
-      toggle.textContent = node.collapsed ? "▶" : "▼";
+      toggle.textContent = isOpen ? "▼" : "▶";
       toggle.addEventListener("click", (event) => {
         event.stopPropagation();
         handlers.onToggleCollapse(node.id);
@@ -68,8 +116,8 @@ function buildList(tree: WindowTree, ids: number[], handlers: TreeHandlers): HTM
     row.addEventListener("click", () => handlers.onActivate(node.id));
     item.appendChild(row);
 
-    if (node.children.length > 0 && !node.collapsed) {
-      item.appendChild(buildList(tree, node.children, handlers));
+    if (node.children.length > 0 && isOpen) {
+      item.appendChild(buildList(tree, node.children, handlers, query, matches, forceExpand));
     }
 
     list.appendChild(item);
