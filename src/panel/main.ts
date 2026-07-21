@@ -5,9 +5,23 @@ import { renderTree } from "./render";
 const container = document.getElementById("tree-root")!;
 const sideToggle = document.getElementById("side-toggle") as HTMLButtonElement;
 const searchInput = document.getElementById("search-input") as HTMLInputElement;
+const newTabButton = document.getElementById("new-tab-button") as HTMLButtonElement;
 let currentWindowId: number;
 let currentSide: PanelSide = "right";
 let lastTree: WindowTree | null = null;
+
+// When hosted in chrome.sidePanel (the macOS-fullscreen fallback — see
+// panelWindow.ts), this instance is permanently bound to its own window:
+// there's no floating window to reposition, and the tracked-window/side
+// broadcasts are meant for the floating panel, not this one. The floating
+// popup always passes an explicit ?windowId=, so its absence means this
+// loaded from the manifest's plain side_panel.default_path (e.g. the user
+// switched tabs away from the one sidePanel.setOptions targeted).
+const windowIdParam = new URLSearchParams(location.search).get("windowId");
+const isSidePanelMode = new URLSearchParams(location.search).get("mode") === "sidepanel" || windowIdParam === null;
+if (isSidePanelMode) {
+  sideToggle.style.display = "none";
+}
 
 function applySideIndicator(): void {
   sideToggle.title = currentSide === "right" ? "Move panel to left side" : "Move panel to right side";
@@ -50,6 +64,10 @@ sideToggle.addEventListener("click", () => {
   void chrome.runtime.sendMessage({ type: "SET_PANEL_SIDE", side: nextSide });
 });
 
+newTabButton.addEventListener("click", () => {
+  void chrome.runtime.sendMessage({ type: "NEW_TAB", windowId: currentWindowId });
+});
+
 searchInput.addEventListener("input", render);
 searchInput.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && searchInput.value) {
@@ -60,8 +78,12 @@ searchInput.addEventListener("keydown", (event) => {
 });
 
 async function init(): Promise<void> {
-  const windowIdParam = new URLSearchParams(location.search).get("windowId");
-  currentWindowId = Number(windowIdParam);
+  if (windowIdParam !== null) {
+    currentWindowId = Number(windowIdParam);
+  } else {
+    const win = await chrome.windows.getCurrent();
+    currentWindowId = win.id!;
+  }
   await refresh();
 }
 
@@ -69,11 +91,11 @@ chrome.runtime.onMessage.addListener((message: Notification) => {
   if (message.type === "TREE_UPDATED" && message.windowId === currentWindowId) {
     void refresh();
   }
-  if (message.type === "SET_TRACKED_WINDOW") {
+  if (message.type === "SET_TRACKED_WINDOW" && !isSidePanelMode) {
     currentWindowId = message.windowId;
     void refresh();
   }
-  if (message.type === "PANEL_SIDE_CHANGED") {
+  if (message.type === "PANEL_SIDE_CHANGED" && !isSidePanelMode) {
     currentSide = message.side;
     applySideIndicator();
   }

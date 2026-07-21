@@ -30,12 +30,18 @@ export interface SetPanelSideRequest {
   side: PanelSide;
 }
 
+export interface NewTabRequest {
+  type: "NEW_TAB";
+  windowId: number;
+}
+
 export type Request =
   | GetTreeRequest
   | ToggleCollapsedRequest
   | ActivateTabRequest
   | CloseTabRequest
-  | SetPanelSideRequest;
+  | SetPanelSideRequest
+  | NewTabRequest;
 
 export interface TreeUpdatedNotification {
   type: "TREE_UPDATED";

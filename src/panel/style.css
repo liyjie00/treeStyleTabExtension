@@ -23,8 +23,15 @@
   box-sizing: border-box;
 }
 
+html,
+body {
+  height: 100%;
+}
+
 body {
   margin: 0;
+  display: flex;
+  flex-direction: column;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-size: 13px;
   background: var(--bg);
@@ -32,11 +39,39 @@ body {
 }
 
 #panel-header {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   gap: 6px;
   padding: 4px 6px;
   border-bottom: 1px solid var(--border);
+}
+
+#tree-root {
+  flex: 1 1 auto;
+  overflow-y: auto;
+}
+
+#panel-footer {
+  flex: 0 0 auto;
+  border-top: 1px solid var(--border);
+  padding: 4px 6px;
+}
+
+#new-tab-button {
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: var(--fg);
+  font-size: 16px;
+  line-height: 1;
+  padding: 4px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+#new-tab-button:hover {
+  background: var(--hover);
 }
 
 #search-input {

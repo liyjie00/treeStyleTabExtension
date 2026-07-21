@@ -147,6 +147,11 @@ chrome.runtime.onMessage.addListener((message: Request, _sender, sendResponse) =
         sendResponse({ ok: true });
         break;
       }
+      case "NEW_TAB": {
+        await chrome.tabs.create({ windowId: message.windowId });
+        sendResponse({ ok: true });
+        break;
+      }
     }
   });
   return true;

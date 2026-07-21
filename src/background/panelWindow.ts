@@ -20,8 +20,8 @@ let side: PanelSide = "right";
 // browser starts, if it was left open when the browser last closed.
 let panelWasOpen = false;
 // Whether we've already compensated for the tracked window's *current*
-// maximized/fullscreen episode. Persisted so a service-worker restart (MV3
-// workers are frequently evicted) can't forget and double-shrink the window.
+// maximized episode. Persisted so a service-worker restart (MV3 workers are
+// frequently evicted) can't forget and double-shrink the window.
 let maximizeShrunk = false;
 let repositionTimer: ReturnType<typeof setTimeout> | undefined;
 let panelSyncTimer: ReturnType<typeof setTimeout> | undefined;
@@ -58,8 +58,8 @@ async function persistPrefs(): Promise<void> {
   await savePanelPrefs({ side, panelWidth, panelWasOpen });
 }
 
-function isMaximizedLike(win: chrome.windows.Window): boolean {
-  return win.state === "maximized" || win.state === "fullscreen";
+function isMaximized(win: chrome.windows.Window): boolean {
+  return win.state === "maximized";
 }
 
 async function getDisplayForWindow(win: chrome.windows.Window): Promise<chrome.system.display.DisplayInfo> {
@@ -130,7 +130,7 @@ async function attachPanelToWindow(windowId: number): Promise<chrome.windows.Win
 
   shrunkWindowId = plan.needsShrink ? windowId : null;
   shrunkAmount = plan.needsShrink ? plan.shrinkAmount : 0;
-  maximizeShrunk = isMaximizedLike(win);
+  maximizeShrunk = isMaximized(win);
   await persistState();
 
   if (!plan.needsShrink) return win;
@@ -205,15 +205,26 @@ function scheduleReposition(): void {
   }, DEBOUNCE_MS);
 }
 
-// Maximizing / fullscreening the tracked window (e.g. double-clicking the
-// title bar) grows it to fill the screen, covering the space the panel sits
-// in — plain manual resizing should NOT trigger this, only an actual
-// maximize/fullscreen transition, gated by `maximizeShrunk` so we act once
-// per episode instead of re-shrinking on every subsequent bounds event.
+// Maximizing the tracked window (e.g. double-clicking the title bar) grows
+// it to fill the screen, covering the space the panel sits in — plain manual
+// resizing should NOT trigger this, only an actual maximize transition,
+// gated by `maximizeShrunk` so we act once per episode instead of
+// re-shrinking on every subsequent bounds event.
 async function reconcileMainWindowWidth(win: chrome.windows.Window): Promise<void> {
   if (win.id === undefined) return;
 
-  if (!isMaximizedLike(win)) {
+  if (win.state === "fullscreen") {
+    // A truly fullscreen window can't have a docked companion window beside
+    // it — macOS moves it to its own Space, and even elsewhere fullscreen
+    // leaves no on-screen room. handleActionClick() switches this window
+    // over to chrome.sidePanel instead (which lives inside the window
+    // itself), gated on the click being a real user gesture. Nothing to do
+    // here besides leaving the floating panel alone; the side panel is the
+    // user's own native UI once open, so it's left for them to close.
+    return;
+  }
+
+  if (!isMaximized(win)) {
     if (maximizeShrunk) {
       maximizeShrunk = false;
       await persistState();
@@ -339,6 +350,10 @@ function buildPanelUrl(windowId: number): string {
   return chrome.runtime.getURL(`panel/index.html?windowId=${windowId}`);
 }
 
+function buildSidePanelPath(windowId: number): string {
+  return `panel/index.html?windowId=${windowId}&mode=sidepanel`;
+}
+
 // Reloading the extension in chrome://extensions tears down and re-serves
 // its resources, so any window still showing our old chrome-extension://
 // page loses its content (Chrome falls it back to the New Tab page) even
@@ -408,10 +423,39 @@ async function autoOpenPanelIfNeeded(candidateWindowId?: number): Promise<void> 
   await ensurePanelOpen(target.id);
 }
 
+// chrome.sidePanel.open() is only allowed in direct response to a user
+// gesture — a background listener reacting to a fullscreen transition
+// doesn't qualify, but this handler (called straight from the toolbar
+// click) does. So the fullscreen fallback can only ever be *entered* here,
+// not proactively from a bounds-changed event.
+//
+// setOptions only accepts a tabId (not windowId) to scope a custom path, so
+// this targets whichever tab is currently active in the window — if the
+// user switches tabs afterward, the panel falls back to the manifest's
+// plain default_path, and panel/main.ts resolves its windowId via
+// chrome.windows.getCurrent() in that case instead of a URL param.
+async function handleActionClick(windowId: number): Promise<void> {
+  const win = await chrome.windows.get(windowId).catch(() => null);
+  if (win?.state === "fullscreen") {
+    const [activeTab] = await chrome.tabs.query({ windowId, active: true });
+    if (activeTab?.id !== undefined) {
+      await chrome.sidePanel
+        .setOptions({ tabId: activeTab.id, path: buildSidePanelPath(windowId), enabled: true })
+        .catch(() => {});
+    }
+    await chrome.sidePanel.open({ windowId }).catch(() => {
+      // Chrome refused the gesture check — nothing more we can do.
+    });
+    return;
+  }
+
+  await ensurePanelOpen(windowId);
+}
+
 export function registerPanelWindowListeners(): void {
   chrome.action.onClicked.addListener((tab) => {
     if (tab.windowId === undefined) return;
-    void ensurePanelOpen(tab.windowId);
+    void handleActionClick(tab.windowId);
   });
 
   chrome.windows.onBoundsChanged.addListener((win) => {
@@ -432,6 +476,11 @@ export function registerPanelWindowListeners(): void {
       if (windowId === chrome.windows.WINDOW_ID_NONE || windowId === panelWindowId) return;
       const win = await chrome.windows.get(windowId).catch(() => null);
       if (!win || win.type !== "normal") return;
+      // A fullscreen window can't host the floating panel beside it (see
+      // reconcileMainWindowWidth) — leave the panel tracking whatever normal
+      // window it last had; the user can still reach this one's tree via
+      // the toolbar-click sidePanel fallback.
+      if (win.state === "fullscreen") return;
       await setTrackedWindow(windowId);
     });
   });
