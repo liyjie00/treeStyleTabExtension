@@ -1,4 +1,4 @@
-import type { PanelSide, WindowTree } from "./types";
+import type { MovePosition, PanelSide, WindowTree } from "./types";
 
 export interface GetTreeRequest {
   type: "GET_TREE";
@@ -35,13 +35,21 @@ export interface NewTabRequest {
   windowId: number;
 }
 
+export interface MoveTabRequest {
+  type: "MOVE_TAB";
+  tabId: number;
+  targetTabId: number | null;
+  position: MovePosition;
+}
+
 export type Request =
   | GetTreeRequest
   | ToggleCollapsedRequest
   | ActivateTabRequest
   | CloseTabRequest
   | SetPanelSideRequest
-  | NewTabRequest;
+  | NewTabRequest
+  | MoveTabRequest;
 
 export interface TreeUpdatedNotification {
   type: "TREE_UPDATED";

@@ -1,5 +1,5 @@
 import type { GetTreeResponse, Notification } from "../shared/messages";
-import type { PanelSide, WindowTree } from "../shared/types";
+import type { MovePosition, PanelSide, WindowTree } from "../shared/types";
 import { renderTree } from "./render";
 
 const container = document.getElementById("tree-root")!;
@@ -42,10 +42,33 @@ function render(): void {
       onClose: (tabId) => {
         void chrome.runtime.sendMessage({ type: "CLOSE_TAB", tabId });
       },
+      onMoveTab: (tabId, targetTabId, position) => {
+        void chrome.runtime
+          .sendMessage({ type: "MOVE_TAB", tabId, targetTabId, position })
+          .then(refresh);
+      },
     },
     searchInput.value
   );
 }
+
+function moveToRoot(tabId: number, position: MovePosition): void {
+  void chrome.runtime.sendMessage({ type: "MOVE_TAB", tabId, targetTabId: null, position }).then(refresh);
+}
+
+// Dropping in the empty space below the tree (not on any row) makes the
+// dragged tab a root tab. Row-level drop handlers stopPropagation, so this
+// only ever fires for a genuinely empty-space drop.
+container.addEventListener("dragover", (event) => {
+  event.preventDefault();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+});
+container.addEventListener("drop", (event) => {
+  event.preventDefault();
+  const draggedIdRaw = event.dataTransfer?.getData("text/plain");
+  if (!draggedIdRaw) return;
+  moveToRoot(Number(draggedIdRaw), "after");
+});
 
 async function refresh(): Promise<void> {
   const response = (await chrome.runtime.sendMessage({

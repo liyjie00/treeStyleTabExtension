@@ -224,6 +224,16 @@ async function reconcileMainWindowWidth(win: chrome.windows.Window): Promise<voi
     return;
   }
 
+  // Just left fullscreen (or this is any other bounds change on a normal
+  // window) — if the floating panel was open before and isn't currently
+  // showing, bring it back automatically. Unlike sidePanel.open(), creating
+  // the popup doesn't need a user gesture, so this doesn't have to wait for
+  // another toolbar click (which also made the hand-back depend on
+  // chrome.windows.get().state having already settled by click time).
+  // autoOpenPanelIfNeeded() no-ops once panelWindowId is already set, so
+  // calling it on every bounds change here is harmless.
+  await autoOpenPanelIfNeeded(win.id);
+
   if (!isMaximized(win)) {
     if (maximizeShrunk) {
       maximizeShrunk = false;

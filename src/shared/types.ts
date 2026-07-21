@@ -19,3 +19,5 @@ export interface WindowTree {
 }
 
 export type PanelSide = "left" | "right";
+
+export type MovePosition = "before" | "after" | "inside";

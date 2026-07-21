@@ -1,13 +1,31 @@
-import type { TabNode, WindowTree } from "../shared/types";
+import type { MovePosition, TabNode, WindowTree } from "../shared/types";
 
 export interface TreeHandlers {
   onActivate(tabId: number): void;
   onToggleCollapse(tabId: number): void;
   onClose(tabId: number): void;
+  onMoveTab(tabId: number, targetTabId: number | null, position: MovePosition): void;
 }
 
 const FALLBACK_FAVICON =
   "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%23999'/%3E%3C/svg%3E";
+
+const DROP_CLASSES = ["drop-before", "drop-after", "drop-inside"];
+
+function clearDropIndicators(): void {
+  document.querySelectorAll(".tab-row").forEach((el) => el.classList.remove(...DROP_CLASSES));
+}
+
+// Top quarter of the row = "insert before it", bottom quarter = "insert
+// after it" (both as a sibling at the row's own level), middle half =
+// "nest inside it as a child".
+function zoneForEvent(row: HTMLElement, clientY: number): MovePosition {
+  const rect = row.getBoundingClientRect();
+  const ratio = (clientY - rect.top) / rect.height;
+  if (ratio < 0.25) return "before";
+  if (ratio > 0.75) return "after";
+  return "inside";
+}
 
 function nodeMatches(node: TabNode, query: string): boolean {
   return node.title.toLowerCase().includes(query) || node.url.toLowerCase().includes(query);
@@ -114,6 +132,39 @@ function buildList(
     row.appendChild(close);
 
     row.addEventListener("click", () => handlers.onActivate(node.id));
+
+    row.draggable = true;
+    row.addEventListener("dragstart", (event) => {
+      event.stopPropagation();
+      event.dataTransfer?.setData("text/plain", String(node.id));
+      if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+      row.classList.add("dragging");
+    });
+    row.addEventListener("dragend", () => {
+      row.classList.remove("dragging");
+      clearDropIndicators();
+    });
+    row.addEventListener("dragover", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+      clearDropIndicators();
+      row.classList.add(`drop-${zoneForEvent(row, event.clientY)}`);
+    });
+    row.addEventListener("dragleave", () => {
+      row.classList.remove(...DROP_CLASSES);
+    });
+    row.addEventListener("drop", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      clearDropIndicators();
+      const draggedIdRaw = event.dataTransfer?.getData("text/plain");
+      if (!draggedIdRaw) return;
+      const draggedId = Number(draggedIdRaw);
+      if (draggedId === node.id) return;
+      handlers.onMoveTab(draggedId, node.id, zoneForEvent(row, event.clientY));
+    });
+
     item.appendChild(row);
 
     if (node.children.length > 0 && isOpen) {

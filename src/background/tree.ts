@@ -1,4 +1,4 @@
-import type { TabNode, WindowTree } from "../shared/types";
+import type { MovePosition, TabNode, WindowTree } from "../shared/types";
 
 export function createWindowTree(windowId: number): WindowTree {
   return { windowId, roots: [], nodes: {} };
@@ -93,4 +93,63 @@ export function toggleCollapsed(tree: WindowTree, tabId: number): boolean {
   if (!node) return false;
   node.collapsed = !node.collapsed;
   return true;
+}
+
+// Returns true if `nodeId` is `ancestorId` itself, or anywhere in its
+// subtree — used to reject drag-and-drop moves that would create a cycle.
+function isSelfOrDescendant(tree: WindowTree, ancestorId: number, nodeId: number): boolean {
+  let current: number | null = nodeId;
+  while (current !== null) {
+    if (current === ancestorId) return true;
+    current = tree.nodes[current]?.parentId ?? null;
+  }
+  return false;
+}
+
+// Drag-and-drop reparent/reorder. `targetTabId: null` means "make this a
+// root tab, appended at the end" — position is irrelevant in that case.
+// The dragged node's own subtree moves with it untouched; only its own
+// parentId (and its old/new siblings arrays) change.
+export function moveTab(
+  tree: WindowTree,
+  tabId: number,
+  targetTabId: number | null,
+  position: MovePosition
+): void {
+  if (tabId === targetTabId) return;
+  const node = tree.nodes[tabId];
+  if (!node) return;
+
+  let newParentId: number | null;
+  if (targetTabId === null) {
+    newParentId = null;
+  } else {
+    const targetNode = tree.nodes[targetTabId];
+    if (!targetNode) return;
+    newParentId = position === "inside" ? targetTabId : targetNode.parentId;
+  }
+
+  // Reject moves that would drop a node into its own subtree.
+  if (newParentId !== null && isSelfOrDescendant(tree, tabId, newParentId)) return;
+
+  const oldSiblings = siblingList(tree, node.parentId);
+  const oldIndex = oldSiblings.indexOf(tabId);
+  if (oldIndex !== -1) oldSiblings.splice(oldIndex, 1);
+
+  node.parentId = newParentId;
+
+  if (targetTabId === null) {
+    tree.roots.push(tabId);
+    return;
+  }
+
+  if (position === "inside") {
+    tree.nodes[targetTabId].children.push(tabId);
+    return;
+  }
+
+  const newSiblings = siblingList(tree, newParentId);
+  const targetIndex = newSiblings.indexOf(targetTabId);
+  const insertAt = targetIndex === -1 ? newSiblings.length : position === "before" ? targetIndex : targetIndex + 1;
+  newSiblings.splice(insertAt, 0, tabId);
 }

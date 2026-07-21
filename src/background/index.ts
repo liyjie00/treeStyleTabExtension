@@ -2,6 +2,7 @@ import {
   addTab,
   createWindowTree,
   dedupeTree,
+  moveTab,
   removeTab,
   setActiveTab,
   toggleCollapsed,
@@ -149,6 +150,15 @@ chrome.runtime.onMessage.addListener((message: Request, _sender, sendResponse) =
       }
       case "NEW_TAB": {
         await chrome.tabs.create({ windowId: message.windowId });
+        sendResponse({ ok: true });
+        break;
+      }
+      case "MOVE_TAB": {
+        const tree = findTreeForTab(message.tabId);
+        if (tree) {
+          moveTab(tree, message.tabId, message.targetTabId, message.position);
+          await persistAndBroadcast(tree.windowId);
+        }
         sendResponse({ ok: true });
         break;
       }
