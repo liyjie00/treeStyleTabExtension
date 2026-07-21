@@ -1,5 +1,6 @@
 import { addTab, createWindowTree, removeTab, setActiveTab, toggleCollapsed, updateTab } from "./tree";
 import { loadState, saveState } from "./storage";
+import { getCurrentSide, registerPanelWindowListeners, setPanelSide } from "./panelWindow";
 import type { WindowTree } from "../shared/types";
 import type { Request } from "../shared/messages";
 
@@ -36,7 +37,7 @@ function findTreeForTab(tabId: number): WindowTree | undefined {
 
 function broadcastTreeUpdated(windowId: number): void {
   chrome.runtime.sendMessage({ type: "TREE_UPDATED", windowId }).catch(() => {
-    // No side panel listening right now — safe to ignore.
+    // No panel window listening right now — safe to ignore.
   });
 }
 
@@ -45,9 +46,7 @@ async function persistAndBroadcast(windowId: number): Promise<void> {
   broadcastTreeUpdated(windowId);
 }
 
-chrome.runtime.onInstalled.addListener(() => {
-  chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(console.error);
-});
+registerPanelWindowListeners();
 
 chrome.tabs.onCreated.addListener((tab) => {
   if (tab.id === undefined || tab.windowId === undefined) return;
@@ -110,7 +109,7 @@ chrome.runtime.onMessage.addListener((message: Request, _sender, sendResponse) =
     switch (message.type) {
       case "GET_TREE": {
         const tree = getOrCreateTree(message.windowId);
-        sendResponse({ tree });
+        sendResponse({ tree, side: getCurrentSide() });
         break;
       }
       case "TOGGLE_COLLAPSED": {
@@ -129,6 +128,11 @@ chrome.runtime.onMessage.addListener((message: Request, _sender, sendResponse) =
       }
       case "CLOSE_TAB": {
         await chrome.tabs.remove(message.tabId);
+        sendResponse({ ok: true });
+        break;
+      }
+      case "SET_PANEL_SIDE": {
+        await setPanelSide(message.side);
         sendResponse({ ok: true });
         break;
       }

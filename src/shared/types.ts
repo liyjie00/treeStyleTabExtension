@@ -17,3 +17,5 @@ export interface WindowTree {
   roots: number[];
   nodes: Tree;
 }
+
+export type PanelSide = "left" | "right";

@@ -13,7 +13,7 @@ export default defineConfig({
     rollupOptions: {
       input: {
         background: fileURLToPath(new URL("./src/background/index.ts", import.meta.url)),
-        sidepanel: fileURLToPath(new URL("./src/sidepanel/index.html", import.meta.url)),
+        panel: fileURLToPath(new URL("./src/panel/index.html", import.meta.url)),
       },
       output: {
         entryFileNames: (chunk) =>

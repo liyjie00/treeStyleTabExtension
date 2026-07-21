@@ -1,4 +1,4 @@
-import type { WindowTree } from "./types";
+import type { PanelSide, WindowTree } from "./types";
 
 export interface GetTreeRequest {
   type: "GET_TREE";
@@ -7,6 +7,7 @@ export interface GetTreeRequest {
 
 export interface GetTreeResponse {
   tree: WindowTree;
+  side: PanelSide;
 }
 
 export interface ToggleCollapsedRequest {
@@ -24,11 +25,34 @@ export interface CloseTabRequest {
   tabId: number;
 }
 
-export type Request = GetTreeRequest | ToggleCollapsedRequest | ActivateTabRequest | CloseTabRequest;
+export interface SetPanelSideRequest {
+  type: "SET_PANEL_SIDE";
+  side: PanelSide;
+}
+
+export type Request =
+  | GetTreeRequest
+  | ToggleCollapsedRequest
+  | ActivateTabRequest
+  | CloseTabRequest
+  | SetPanelSideRequest;
 
 export interface TreeUpdatedNotification {
   type: "TREE_UPDATED";
   windowId: number;
 }
 
-export type Notification = TreeUpdatedNotification;
+export interface SetTrackedWindowNotification {
+  type: "SET_TRACKED_WINDOW";
+  windowId: number;
+}
+
+export interface PanelSideChangedNotification {
+  type: "PANEL_SIDE_CHANGED";
+  side: PanelSide;
+}
+
+export type Notification =
+  | TreeUpdatedNotification
+  | SetTrackedWindowNotification
+  | PanelSideChangedNotification;
