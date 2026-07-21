@@ -1,0 +1,107 @@
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff;
+  --fg: #1b1b1b;
+  --hover: #e8e8e8;
+  --active: #d6e6ff;
+  --border: #ddd;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1e1e1e;
+    --fg: #eaeaea;
+    --hover: #2c2c2c;
+    --active: #234a72;
+    --border: #333;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 13px;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+.tab-list {
+  list-style: none;
+  margin: 0;
+  padding-left: 14px;
+}
+
+.tab-list:first-child {
+  padding-left: 0;
+}
+
+.tab-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.tab-row:hover {
+  background: var(--hover);
+}
+
+.tab-row.active {
+  background: var(--active);
+  font-weight: 600;
+}
+
+.tab-toggle {
+  width: 12px;
+  flex-shrink: 0;
+  text-align: center;
+  font-size: 10px;
+  color: #888;
+  cursor: pointer;
+}
+
+.tab-toggle-empty {
+  cursor: default;
+}
+
+.tab-favicon {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
+.tab-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tab-close {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  line-height: 16px;
+  text-align: center;
+  border-radius: 3px;
+  font-size: 14px;
+  color: #888;
+  cursor: pointer;
+  visibility: hidden;
+}
+
+.tab-row:hover .tab-close {
+  visibility: visible;
+}
+
+.tab-close:hover {
+  background: rgba(128, 128, 128, 0.3);
+  color: var(--fg);
+}

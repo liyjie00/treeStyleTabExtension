@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "Tree Style Tabs",
+  "version": "0.1.0",
+  "description": "Nest tabs opened from a link under their opener tab, tree-style, like Firefox's Tree Style Tab.",
+  "permissions": ["tabs", "storage", "sidePanel"],
+  "background": {
+    "service_worker": "background/index.js",
+    "type": "module"
+  },
+  "side_panel": {
+    "default_path": "sidepanel/index.html"
+  },
+  "action": {
+    "default_title": "Tree Style Tabs"
+  },
+  "icons": {
+    "16": "icons/16.png",
+    "32": "icons/32.png",
+    "48": "icons/48.png",
+    "128": "icons/128.png"
+  }
+}
