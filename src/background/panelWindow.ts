@@ -23,6 +23,19 @@ let panelWasOpen = false;
 // maximized episode. Persisted so a service-worker restart (MV3 workers are
 // frequently evicted) can't forget and double-shrink the window.
 let maximizeShrunk = false;
+// The window currently showing the panel via the chrome.sidePanel fullscreen
+// fallback, if any — independent of panelWasOpen/trackedWindowId, since the
+// floating popup may never have existed yet (e.g. the very first click
+// happens while already fullscreen). Not persisted: a service-worker
+// restart mid-fullscreen just means the eventual exit won't auto-hand-back,
+// which is a minor miss, not a broken state.
+let fullscreenPanelWindowId: number | null = null;
+// Tracked passively from onBoundsChanged (no gesture constraint there) so
+// handleActionClick can decide synchronously, with zero awaits, whether to
+// call chrome.sidePanel.open() — that call only works within a very short
+// window after the click; any await beforehand (even just checking window
+// state) reliably breaks it.
+let currentlyFullscreenWindowId: number | null = null;
 let repositionTimer: ReturnType<typeof setTimeout> | undefined;
 let panelSyncTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -48,6 +61,24 @@ async function initPanelState(): Promise<void> {
   panelWidth = prefs.panelWidth;
   side = prefs.side;
   panelWasOpen = prefs.panelWasOpen;
+  await closeOrphanedPanelWindows();
+}
+
+// Safety net: closes any popup window showing our panel page that isn't the
+// currently tracked one. A stray can be left behind by a race between the
+// several independent triggers that can call ensurePanelOpen, or simply by
+// panelWindowId being lost across a service-worker restart while a window
+// still lingers. Runs at startup and after every (re)open.
+async function closeOrphanedPanelWindows(): Promise<void> {
+  const panelUrlPrefix = chrome.runtime.getURL("panel/");
+  const windows = await chrome.windows.getAll({ populate: true, windowTypes: ["popup"] });
+  for (const win of windows) {
+    if (win.id === undefined || win.id === panelWindowId) continue;
+    const isPanelWindow = win.tabs?.some((tab) => tab.url?.startsWith(panelUrlPrefix));
+    if (isPanelWindow) {
+      await chrome.windows.remove(win.id).catch(() => {});
+    }
+  }
 }
 
 async function persistState(): Promise<void> {
@@ -170,26 +201,45 @@ function mainTouchEdge(win: chrome.windows.Window): number {
   return side === "right" ? (win.left ?? 0) + (win.width ?? 0) : win.left ?? 0;
 }
 
-function panelBoundsFromMainWindow(win: chrome.windows.Window): {
+// Chrome rejects window bounds that would end up more than ~50% off any
+// visible display. The main window's own bounds can be transiently
+// inconsistent mid-animation (e.g. during a fullscreen enter/exit), which
+// otherwise propagates straight into an invalid position for the panel and
+// throws an unhandled "Invalid value for bounds" error. Clamp defensively
+// against whatever display actually contains the main window.
+function clampToDisplay(
+  bounds: { left: number; top: number; width: number; height: number },
+  area: { left: number; top: number; width: number; height: number }
+): { left: number; top: number; width: number; height: number } {
+  const width = Math.min(bounds.width, area.width);
+  const height = Math.min(bounds.height, area.height);
+  const left = Math.min(Math.max(bounds.left, area.left), area.left + area.width - width);
+  const top = Math.min(Math.max(bounds.top, area.top), area.top + area.height - height);
+  return { left, top, width, height };
+}
+
+async function panelBoundsFromMainWindow(win: chrome.windows.Window): Promise<{
   left: number;
   top: number;
   width: number;
   height: number;
-} {
+}> {
   const edge = mainTouchEdge(win);
-  return {
+  const bounds = {
     left: side === "right" ? edge : edge - panelWidth,
     top: win.top ?? 0,
     width: panelWidth,
     height: win.height ?? 0,
   };
+  const display = await getDisplayForWindow(win);
+  return clampToDisplay(bounds, display.workArea);
 }
 
 async function repositionPanel(): Promise<void> {
   if (panelWindowId === null || trackedWindowId === null) return;
   try {
     const mainWindow = await chrome.windows.get(trackedWindowId);
-    const bounds = panelBoundsFromMainWindow(mainWindow);
+    const bounds = await panelBoundsFromMainWindow(mainWindow);
     await chrome.windows.update(panelWindowId, bounds);
   } catch {
     panelWindowId = null;
@@ -203,6 +253,22 @@ function scheduleReposition(): void {
     repositionTimer = undefined;
     void repositionPanel();
   }, DEBOUNCE_MS);
+}
+
+// The floating popup may never have existed for this window yet — e.g. the
+// user's very first click happened while it was already fullscreen, so
+// trackedWindowId/panelWasOpen were never set. Because of that, this has to
+// be reachable independent of the trackedWindowId gate in the
+// onBoundsChanged listener below, keyed purely on fullscreenPanelWindowId.
+async function restoreFromFullscreenIfNeeded(win: chrome.windows.Window): Promise<void> {
+  if (win.id === undefined || win.state === "fullscreen" || fullscreenPanelWindowId !== win.id) return;
+  const windowId = win.id;
+  fullscreenPanelWindowId = null;
+  const [activeTab] = await chrome.tabs.query({ windowId, active: true });
+  if (activeTab?.id !== undefined) {
+    await chrome.sidePanel.setOptions({ tabId: activeTab.id, enabled: false }).catch(() => {});
+  }
+  await ensurePanelOpen(windowId);
 }
 
 // Maximizing the tracked window (e.g. double-clicking the title bar) grows
@@ -378,7 +444,24 @@ async function ensurePanelWindowContent(windowId: number, url: string): Promise<
   }
 }
 
-export async function ensurePanelOpen(initialWindowId: number): Promise<void> {
+// Several independent triggers (a toolbar click, restoreFromFullscreenIfNeeded,
+// reconcileMainWindowWidth's auto-restore) can all decide "open the panel"
+// for overlapping events — fullscreen exit alone fires onBoundsChanged
+// multiple times in quick succession during the animation. Since
+// panelWindowId only gets set after chrome.windows.create() resolves, two
+// concurrent calls would both see it as null and both create a window.
+// Serializing every call through this chain means the second one only
+// starts once the first has actually finished, so it sees the real
+// panelWindowId and reuses it instead of duplicating.
+let ensurePanelOpenChain: Promise<void> = Promise.resolve();
+
+export function ensurePanelOpen(initialWindowId: number): Promise<void> {
+  const run = () => doEnsurePanelOpen(initialWindowId);
+  ensurePanelOpenChain = ensurePanelOpenChain.then(run, run);
+  return ensurePanelOpenChain;
+}
+
+async function doEnsurePanelOpen(initialWindowId: number): Promise<void> {
   await readyPanel;
 
   if (panelWindowId !== null) {
@@ -386,6 +469,7 @@ export async function ensurePanelOpen(initialWindowId: number): Promise<void> {
       await chrome.windows.update(panelWindowId, { focused: true });
       await ensurePanelWindowContent(panelWindowId, buildPanelUrl(initialWindowId));
       await setTrackedWindow(initialWindowId);
+      await closeOrphanedPanelWindows();
       return;
     } catch {
       panelWindowId = null;
@@ -394,22 +478,25 @@ export async function ensurePanelOpen(initialWindowId: number): Promise<void> {
 
   trackedWindowId = initialWindowId;
   const mainWindow = await attachPanelToWindow(initialWindowId);
-  const bounds = panelBoundsFromMainWindow(mainWindow);
+  const bounds = await panelBoundsFromMainWindow(mainWindow);
   const url = buildPanelUrl(initialWindowId);
 
-  const created = await chrome.windows.create({
-    url,
-    type: "popup",
-    left: bounds.left,
-    top: bounds.top,
-    width: bounds.width,
-    height: bounds.height,
-  });
-  panelWindowId = created.id ?? null;
+  const created = await chrome.windows
+    .create({
+      url,
+      type: "popup",
+      left: bounds.left,
+      top: bounds.top,
+      width: bounds.width,
+      height: bounds.height,
+    })
+    .catch(() => null);
+  panelWindowId = created?.id ?? null;
   await persistState();
 
   panelWasOpen = true;
   await persistPrefs();
+  await closeOrphanedPanelWindows();
 }
 
 // Reopens the panel automatically if it was still open last time and isn't
@@ -433,26 +520,18 @@ async function autoOpenPanelIfNeeded(candidateWindowId?: number): Promise<void> 
   await ensurePanelOpen(target.id);
 }
 
-// chrome.sidePanel.open() is only allowed in direct response to a user
-// gesture — a background listener reacting to a fullscreen transition
-// doesn't qualify, but this handler (called straight from the toolbar
-// click) does. So the fullscreen fallback can only ever be *entered* here,
-// not proactively from a bounds-changed event.
-//
-// setOptions only accepts a tabId (not windowId) to scope a custom path, so
-// this targets whichever tab is currently active in the window — if the
-// user switches tabs afterward, the panel falls back to the manifest's
-// plain default_path, and panel/main.ts resolves its windowId via
-// chrome.windows.getCurrent() in that case instead of a URL param.
+// chrome.sidePanel.open() is only allowed within a very short window after a
+// genuine user gesture — even a single preceding await (checking window
+// state, querying the active tab) reliably breaks it. So this branch must
+// call it as the very first thing, with zero awaits beforehand, which is
+// why the fullscreen check reads the passively-tracked
+// currentlyFullscreenWindowId instead of asking Chrome fresh — and why the
+// side panel's custom path is configured proactively in the
+// onBoundsChanged listener (no gesture needed for setOptions) rather than
+// here.
 async function handleActionClick(windowId: number): Promise<void> {
-  const win = await chrome.windows.get(windowId).catch(() => null);
-  if (win?.state === "fullscreen") {
-    const [activeTab] = await chrome.tabs.query({ windowId, active: true });
-    if (activeTab?.id !== undefined) {
-      await chrome.sidePanel
-        .setOptions({ tabId: activeTab.id, path: buildSidePanelPath(windowId), enabled: true })
-        .catch(() => {});
-    }
+  if (windowId === currentlyFullscreenWindowId) {
+    fullscreenPanelWindowId = windowId;
     await chrome.sidePanel.open({ windowId }).catch(() => {
       // Chrome refused the gesture check — nothing more we can do.
     });
@@ -463,14 +542,43 @@ async function handleActionClick(windowId: number): Promise<void> {
 }
 
 export function registerPanelWindowListeners(): void {
+  // Declaring side_panel.default_path apparently makes Chrome treat opening
+  // the side panel as the action button's default behavior, intercepting
+  // the click before our own onClicked listener ever runs it — regardless
+  // of docs saying this defaults to false. Force it off explicitly so every
+  // click reaches handleActionClick, which decides floating-popup vs
+  // sidePanel itself based on the window's fullscreen state.
+  chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: false }).catch(() => {});
+
   chrome.action.onClicked.addListener((tab) => {
     if (tab.windowId === undefined) return;
     void handleActionClick(tab.windowId);
   });
 
   chrome.windows.onBoundsChanged.addListener((win) => {
+    if (win.id === undefined) return;
+
+    // Tracked outside readyPanel/any await so it's always immediately
+    // current — handleActionClick depends on reading this synchronously to
+    // preserve the user-gesture window for sidePanel.open(). Also
+    // proactively configures the side panel's custom path here, since
+    // setOptions (unlike open()) has no gesture requirement — by the time
+    // the user actually clicks, it's already pointed at the right window.
+    if (win.state === "fullscreen") {
+      currentlyFullscreenWindowId = win.id;
+      const windowId = win.id;
+      void chrome.tabs.query({ windowId, active: true }).then(([activeTab]) => {
+        if (activeTab?.id === undefined) return;
+        void chrome.sidePanel
+          .setOptions({ tabId: activeTab.id, path: buildSidePanelPath(windowId), enabled: true })
+          .catch(() => {});
+      });
+    } else if (currentlyFullscreenWindowId === win.id) {
+      currentlyFullscreenWindowId = null;
+    }
+
     void readyPanel.then(async () => {
-      if (win.id === undefined) return;
+      await restoreFromFullscreenIfNeeded(win);
       if (win.id === trackedWindowId) {
         await reconcileMainWindowWidth(win);
         scheduleReposition();
