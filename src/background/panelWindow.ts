@@ -336,6 +336,13 @@ async function syncFromPanelBounds(): Promise<void> {
     return;
   }
 
+  // Resizing a fullscreen window forces Chrome to exit fullscreen just to
+  // apply the new width — never touch the main window's bounds while it's
+  // fullscreen, however this got triggered (e.g. the panel's own reposition,
+  // reacting to the main window filling the screen, can itself fire a bounds
+  // change for the panel that loops back here).
+  if (mainWindow.state === "fullscreen") return;
+
   const observedWidth = panelWin.width ?? panelWidth;
   if (observedWidth !== panelWidth) {
     panelWidth = observedWidth;
@@ -531,10 +538,28 @@ async function autoOpenPanelIfNeeded(candidateWindowId?: number): Promise<void> 
 // here.
 async function handleActionClick(windowId: number): Promise<void> {
   if (windowId === currentlyFullscreenWindowId) {
+    if (fullscreenPanelWindowId === windowId) {
+      // Already open for this window — toggle it closed instead of
+      // re-opening. setOptions has no gesture requirement, unlike open().
+      fullscreenPanelWindowId = null;
+      const [activeTab] = await chrome.tabs.query({ windowId, active: true });
+      if (activeTab?.id !== undefined) {
+        await chrome.sidePanel.setOptions({ tabId: activeTab.id, enabled: false }).catch(() => {});
+      }
+      return;
+    }
     fullscreenPanelWindowId = windowId;
     await chrome.sidePanel.open({ windowId }).catch(() => {
       // Chrome refused the gesture check — nothing more we can do.
     });
+    return;
+  }
+
+  if (panelWindowId !== null && trackedWindowId === windowId) {
+    // Already open and showing this window's tree — toggle it closed. The
+    // onRemoved listener handles clearing panelWindowId/trackedWindowId/
+    // panelWasOpen and restoring the shrunk window's width.
+    await chrome.windows.remove(panelWindowId).catch(() => {});
     return;
   }
 
@@ -581,7 +606,12 @@ export function registerPanelWindowListeners(): void {
       await restoreFromFullscreenIfNeeded(win);
       if (win.id === trackedWindowId) {
         await reconcileMainWindowWidth(win);
-        scheduleReposition();
+        // Don't reposition the floating panel against a fullscreen window's
+        // (screen-filling) bounds — it's not visible next to it anyway
+        // (different macOS Space), and moving it can itself trigger a
+        // bounds-changed event for the panel that loops back into trying to
+        // resize the fullscreen window.
+        if (win.state !== "fullscreen") scheduleReposition();
       } else if (win.id === panelWindowId) {
         schedulePanelSync();
       }
