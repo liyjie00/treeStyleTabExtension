@@ -5,7 +5,6 @@ export interface TabNode {
   children: number[];
   collapsed: boolean;
   title: string;
-  favIconUrl: string | null;
   url: string;
   active: boolean;
 }

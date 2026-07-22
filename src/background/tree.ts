@@ -22,7 +22,6 @@ export function addTab(
   const existing = tree.nodes[tab.id];
   if (existing) {
     existing.title = tab.title ?? existing.title;
-    existing.favIconUrl = tab.favIconUrl ?? existing.favIconUrl;
     existing.url = tab.url ?? existing.url;
     return;
   }
@@ -38,7 +37,6 @@ export function addTab(
     children: [],
     collapsed: false,
     title: tab.title ?? "",
-    favIconUrl: tab.favIconUrl ?? null,
     url: tab.url ?? "",
     active: !!tab.active,
   };
@@ -78,7 +76,6 @@ export function updateTab(tree: WindowTree, tab: chrome.tabs.Tab): void {
   const node = tree.nodes[tab.id];
   if (!node) return;
   node.title = tab.title ?? node.title;
-  node.favIconUrl = tab.favIconUrl ?? node.favIconUrl;
   node.url = tab.url ?? node.url;
 }
 

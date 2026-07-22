@@ -79,7 +79,7 @@ chrome.tabs.onRemoved.addListener((tabId, removeInfo) => {
 });
 
 chrome.tabs.onUpdated.addListener((_tabId, changeInfo, tab) => {
-  if (!("title" in changeInfo) && !("favIconUrl" in changeInfo) && !("url" in changeInfo)) return;
+  if (!("title" in changeInfo) && !("url" in changeInfo)) return;
   if (tab.windowId === undefined) return;
   void ready.then(async () => {
     const tree = state[tab.windowId];

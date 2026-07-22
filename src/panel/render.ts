@@ -10,6 +10,18 @@ export interface TreeHandlers {
 const FALLBACK_FAVICON =
   "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%23999'/%3E%3C/svg%3E";
 
+// tab.favIconUrl (used previously) can be missing, stale, or fail to load
+// for plenty of ordinary tabs (still loading, chrome:// pages, some sites
+// blocking hotlinking). Chrome's dedicated _favicon endpoint — sourced from
+// its own favicon cache, keyed purely by page URL — is far more reliable.
+// Requires the "favicon" permission.
+function faviconUrlFor(pageUrl: string): string {
+  const url = new URL(chrome.runtime.getURL("/_favicon/"));
+  url.searchParams.set("pageUrl", pageUrl);
+  url.searchParams.set("size", "32");
+  return url.toString();
+}
+
 const DROP_CLASSES = ["drop-before", "drop-after", "drop-inside"];
 
 function clearDropIndicators(): void {
@@ -110,7 +122,7 @@ function buildList(
 
     const favicon = document.createElement("img");
     favicon.className = "tab-favicon";
-    favicon.src = node.favIconUrl || FALLBACK_FAVICON;
+    favicon.src = node.url ? faviconUrlFor(node.url) : FALLBACK_FAVICON;
     favicon.addEventListener("error", () => {
       favicon.src = FALLBACK_FAVICON;
     });
